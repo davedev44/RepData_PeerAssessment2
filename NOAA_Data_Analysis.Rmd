@@ -1,0 +1,543 @@
+---
+title: Effects of Weather Events on Population Health and Local Economies
+author: davedev44 @ github
+output: html_document
+---
+
+## Summary
+
+This document contains analysis of major weather events as they affected
+population health (injuries and fatalities) as well as their economic
+consequences (estimated monetary value of property and crop damage). Through
+investigation of data provided by the NOAA between 1996 and 2011, it was
+determined that tornados had the greatest effect on population health, while
+flooding had the greatest economic consequences.
+
+## Collaboration Note
+
+I drew heavily upon the "Project 2 Tips" thread in the discussion forums for
+completion of this report. In particular, the ideas for cleaning up the
+data categories (and how to do that with approximate string matching), using 
+only events from 1996-2011 (and the source for that), and using 
+inflation-adjusted dollar figures. In addition, as in other projects, I drew
+upon various internet sources for little things (how to do this or that in R).
+
+## Data Processing
+
+The NOAA dataset is obtained as a bzfile from a designated source on the web,
+obtainable as of the data of the production of this document. The data
+were then loaded.
+
+```{r getloaddata, echo=TRUE}
+
+# URL for the data of interest
+NOAA_URL <- 
+"https://d396qusza40orc.cloudfront.net/repdata%2Fdata%2FStormData.csv.bz2"
+
+filename <- "StormData.bz2"
+
+# Obtain the file
+download.file(NOAA_URL, filename)
+
+# Read the file. Note that read.csv can read a compressed file!
+stormdata <- read.csv(filename)
+```
+
+The dataset is a list of major weather events between 1950 and 2011. In order 
+to address the issues of interest (effects of different types of storm events 
+on population health and local economies), we reduce the data set to the 
+columns of interest. Let's take a look at the names of the columns in the 
+dataset.
+
+```{r, echo=TRUE}
+names(stormdata)
+```
+
+Based on the above names, we would want to extract the EVTYPE column (event
+type), FATALITIES and INJURIES (as a measure of effect on population health),
+and PROPDMG/PROPDMGEXP and CROPDMG/CROPDMGEXP as measures of economic effects
+(property damage and crop damage for a given event). PROPDMG and CROPDMG
+are numeric values, paired with their respective "EXP" variables as a multiplier
+(for instance, if PROPDMG is 5, and PROPDMGEXP is "k", the monetary damage
+would be 5000). We'll also retain the date column; its cleanup will be
+discussed later.
+
+So we extract the above-listed columns.
+
+```{r, echo=TRUE}
+stormdataSub <- stormdata[,c("EVTYPE", 
+                             "FATALITIES", 
+                             "INJURIES", 
+                             "PROPDMG",
+                             "PROPDMGEXP",
+                             "CROPDMG", 
+                             "CROPDMGEXP",
+                             "BGN_DATE")]
+```
+
+
+Next, we'll do some data cleaning. First, we'll clean up the dates. According
+to related documentation 
+(http://www.ncdc.noaa.gov/stormevents/details.jsp?type=eventtype) tracking
+of all events did not start until 1996, and as such, events before 1996
+will be overweighted toward only those types of events that were tracked.
+As such, we restrict our analysis to 1996-2011.
+
+```{r, echo=TRUE}
+
+# Clean up the date column by removing the time portion and converting to a date.
+stormdataSub$BGN_DATE <- as.Date(gsub("(\\S+) \\S+", "\\1", stormdataSub$BGN_DATE, perl=TRUE), "%m/%d/%Y")
+
+# Remove all records before 1996
+effectiveDate <- as.Date("01/01/1996", "%m/%d/%Y")
+stormdataSub <- stormdataSub[stormdataSub$BGN_DATE >= effectiveDate,]
+
+# Add an additional column with just the year, for later inflation calculations
+stormdataSub$year <- format(stormdataSub$BGN_DATE, "%Y")
+```
+
+Now we set about cleaning up columns of interest. First, the event types.
+The database documentation provides 48 "official" categories; in the
+EVTYPE column there are many typos, errors, and the like; the cleaning
+effort for this column will be the process of converting all of the values
+in the EVTYPE column to an official category. We do so by trimming whitespace,
+converting values to upper case, eliminating values (events) for which
+the mapping does not make sense, using an approximate string match as a
+first cut for establishing the intended mapping, and finally, manually
+inspecting the first cut mapping and editing as necessary.
+
+The mapping will by no means be perfect, but it is reproducible with the
+following code, and is a best attempt.
+```{r, echo=TRUE}
+
+# The list of 48 "official" event types
+officialEventTypes = c ("ASTRONOMICAL LOW TIDE", 
+               "AVALANCHE",
+               "BLIZZARD", 
+               "COASTAL FLOOD",
+               "COLD/WIND CHILL",
+               "DEBRIS FLOW", 
+               "DENSE FOG",
+               "DENSE SMOKE",
+               "DROUGHT",
+               "DUST DEVIL",
+               "DUST STORM",
+               "EXCESSIVE HEAT",
+               "EXTREME COLD/WIND CHILL",
+               "FLASH FLOOD",
+               "FLOOD",
+               "FREEZING FOG",
+               "FROST/FREEZE",
+               "FUNNEL CLOUD",
+               "HAIL", 
+               "HEAT", 
+               "HEAVY RAIN",
+               "HEAVY SNOW",
+               "HIGH SURF",
+               "HIGH WIND", 
+               "HURRICANE/TYPHOON",
+               "ICE STORM",
+               "LAKESHORE FLOOD",
+               "LAKE-EFFECT SNOW",
+               "LIGHTNING", 
+               "MARINE HAIL", 
+               "MARINE HIGH WIND", 
+               "MARINE STRONG WIND", 
+               "MARINE THUNDERSTORM WIND", 
+               "RIP CURRENT", 
+               "SEICHE", 
+               "SLEET", 
+               "STORM TIDE",
+               "STRONG WIND", 
+               "THUNDERSTORM WIND", 
+               "TORNADO", 
+               "TROPICAL DEPRESSION", 
+               "TROPICAL STORM", 
+               "TSUNAMI", 
+               "VOLCANIC ASH", 
+               "WATERSPOUT", 
+               "WILDFIRE", 
+               "WINTER STORM", 
+               "WINTER WEATHER")
+
+# Convert to ALL CAPS and trim whitespace
+library(stringr)
+stormdataSub$EVTYPEADJ <- str_trim(toupper(stormdataSub$EVTYPE))
+
+# Immediately remove events containing SUMMARY, MONTHLY, NONE, OTHER, NORTHERN LIGHTS
+# as they are not trying to communicate an event type
+stormdataSub <- stormdataSub[!grepl("SUMMARY", stormdataSub$EVTYPEADJ),]
+stormdataSub <- stormdataSub[!grepl("MONTHLY", stormdataSub$EVTYPEADJ),]
+stormdataSub <- stormdataSub[!grepl("NONE", stormdataSub$EVTYPEADJ),]
+stormdataSub <- stormdataSub[!grepl("OTHER", stormdataSub$EVTYPEADJ),]
+stormdataSub <- stormdataSub[!grepl("NORTHERN LIGHTS", stormdataSub$EVTYPEADJ),]
+
+# stringdist gives a warning about version number that is not relevant
+suppressWarnings(library(stringdist))
+library(plyr)
+
+# Compute frequency of event types. We don't care about the counts (freq column),
+# just the unique list of event types (adjusted so far as above)
+rawEventFreq <- count(stormdataSub, 'EVTYPEADJ')
+rawEventFreq$freq <- NULL
+
+# Match each of those to the official event types with an approximate string match
+# Picked maxDist 15 as it seems to strike a balance between finding a match
+# for mostly everything, and making mostly correct matches. It does not matter too
+# much as it will be inspected by hand and adjusted anyway.
+officialEventMatch <- amatch(rawEventFreq$EVTYPEADJ, officialEventTypes, maxDist=15)
+
+# Attach the result of the match as a column to the event frequency
+rawEventFreq$matchedEventType <- officialEventTypes[officialEventMatch]
+
+# Make manual corrections - a mixture of regexp and exact matches
+rawEventFreq$matchedEventType[grep("TSTM", rawEventFreq$EVTYPEADJ)] <- "THUNDERSTORM WIND"
+rawEventFreq$matchedEventType[which(rawEventFreq$EVTYPEADJ=="ABNORMAL WARMTH")] <- "HEAT"
+rawEventFreq$matchedEventType[which(rawEventFreq$EVTYPEADJ=="ABNORMALLY DRY")] <- "DROUGHT"
+rawEventFreq$matchedEventType[which(rawEventFreq$EVTYPEADJ=="ABNORMALLY WET")] <- "HEAVY RAIN"
+rawEventFreq$matchedEventType[which(rawEventFreq$EVTYPEADJ=="ASTRONOMICAL HIGH TIDE")] <- "STORM TIDE"
+rawEventFreq$matchedEventType[which(rawEventFreq$EVTYPEADJ=="BEACH EROSION")] <- "HIGH SURF"
+rawEventFreq$matchedEventType[which(rawEventFreq$EVTYPEADJ=="BITTER WIND CHILL TEMPERATURES")] <- "COLD/WIND CHILL"
+rawEventFreq$matchedEventType[which(rawEventFreq$EVTYPEADJ=="BLACK ICE")] <- "ICE STORM"
+rawEventFreq$matchedEventType[which(rawEventFreq$EVTYPEADJ=="BLOWING DUST")] <- "DUST STORM"
+rawEventFreq$matchedEventType[grep("^COLD", rawEventFreq$EVTYPEADJ)] <- "COLD/WIND CHILL"
+rawEventFreq$matchedEventType[which(rawEventFreq$EVTYPEADJ=="COOL SPELL")] <- "COLD/WIND CHILL"
+rawEventFreq$matchedEventType[which(rawEventFreq$EVTYPEADJ=="DAM BREAK")] <- "FLOOD"
+rawEventFreq$matchedEventType[which(rawEventFreq$EVTYPEADJ=="DOWNBURST")] <- "THUNDERSTORM WIND"
+rawEventFreq$matchedEventType[which(rawEventFreq$EVTYPEADJ=="DRIEST MONTH")] <- "DROUGHT"
+rawEventFreq$matchedEventType[which(rawEventFreq$EVTYPEADJ=="DRIFTING SNOW")] <- "HEAVY SNOW"
+rawEventFreq$matchedEventType[which(rawEventFreq$EVTYPEADJ=="DROWNING")] <- "FLOOD"
+rawEventFreq$matchedEventType[which(rawEventFreq$EVTYPEADJ=="DRY")] <- "DROUGHT"
+rawEventFreq$matchedEventType[grep("MICROBURST", rawEventFreq$EVTYPEADJ)] <- "TORNADO"
+rawEventFreq$matchedEventType[which(rawEventFreq$EVTYPEADJ=="DRY WEATHER")] <- "DROUGHT"
+rawEventFreq$matchedEventType[which(rawEventFreq$EVTYPEADJ=="EARLY FROST")] <- "COLD/WIND CHILL"
+rawEventFreq$matchedEventType[which(rawEventFreq$EVTYPEADJ=="EXCESSIVE COLD")] <- "EXTREME COLD/WIND CHILL"
+rawEventFreq$matchedEventType[grep("^EXCESSIVE RAIN", rawEventFreq$EVTYPEADJ)] <- "HEAVY RAIN"
+rawEventFreq$matchedEventType[which(rawEventFreq$EVTYPEADJ=="EXCESSIVE SNOW")] <- "HEAVY SNOW"
+rawEventFreq$matchedEventType[which(rawEventFreq$EVTYPEADJ=="EXCESSIVELY DRY")] <- "DROUGHT"
+rawEventFreq$matchedEventType[which(rawEventFreq$EVTYPEADJ=="EXTENDED COLD")] <- "COLD/WIND CHILL"
+rawEventFreq$matchedEventType[which(rawEventFreq$EVTYPEADJ=="EXTREME COLD")] <- "EXTREME COLD/WIND CHILL"
+rawEventFreq$matchedEventType[which(rawEventFreq$EVTYPEADJ=="EXTREME WINDCHILL TEMPERATURES")] <- "EXTREME COLD/WIND CHILL"
+rawEventFreq$matchedEventType[which(rawEventFreq$EVTYPEADJ=="EXTREMELY WET")] <- "HEAVY RAIN"
+rawEventFreq$matchedEventType[which(rawEventFreq$EVTYPEADJ=="FALLING SNOW/ICE")] <- "ICE STORM"
+rawEventFreq$matchedEventType[which(rawEventFreq$EVTYPEADJ=="FIRST FROST")] <- "FROST/FREEZE"
+rawEventFreq$matchedEventType[which(rawEventFreq$EVTYPEADJ=="FLOOD/STRONG WIND")] <- "FLOOD"
+rawEventFreq$matchedEventType[which(rawEventFreq$EVTYPEADJ=="FOG")] <- "DENSE FOG"
+rawEventFreq$matchedEventType[which(rawEventFreq$EVTYPEADJ=="FREEZE")] <- "FROST/FREEZE"
+rawEventFreq$matchedEventType[grep("^FREEZING", rawEventFreq$EVTYPEADJ)] <- "SLEET"
+rawEventFreq$matchedEventType[which(rawEventFreq$EVTYPEADJ=="FROST")] <- "FROST/FREEZE"
+rawEventFreq$matchedEventType[which(rawEventFreq$EVTYPEADJ=="GLAZE")] <- "ICE STORM"
+rawEventFreq$matchedEventType[grep("THUNDERSTORM WIND", rawEventFreq$EVTYPEADJ)] <- "THUNDERSTORM WIND"
+rawEventFreq$matchedEventType[which(rawEventFreq$EVTYPEADJ=="GUSTY WIND/HAIL")] <- "HAIL"
+rawEventFreq$matchedEventType[which(rawEventFreq$EVTYPEADJ=="GUSTY WIND/HVY RAIN")] <- "HEAVY RAIN"
+rawEventFreq$matchedEventType[which(rawEventFreq$EVTYPEADJ=="GUSTY WIND/RAIN")] <- "HEAVY RAIN"
+rawEventFreq$matchedEventType[grep("^HAIL", rawEventFreq$EVTYPEADJ)] <- "HAIL"
+rawEventFreq$matchedEventType[which(rawEventFreq$EVTYPEADJ=="HEAVY SEAS")] <- "HIGH SURF"
+rawEventFreq$matchedEventType[which(rawEventFreq$EVTYPEADJ=="HEAVY SURF")] <- "HIGH SURF"
+rawEventFreq$matchedEventType[which(rawEventFreq$EVTYPEADJ=="HEAVY SURF AND WIND")] <- "HIGH SURF"
+rawEventFreq$matchedEventType[which(rawEventFreq$EVTYPEADJ=="HIGH WATER")] <- "FLOOD"
+rawEventFreq$matchedEventType[grep("^HOT", rawEventFreq$EVTYPEADJ)] <- "HEAT"
+rawEventFreq$matchedEventType[which(rawEventFreq$EVTYPEADJ=="HURRICANE")] <- "HURRICANE/TYPHOON"
+rawEventFreq$matchedEventType[which(rawEventFreq$EVTYPEADJ=="HYPERTHERMIA/EXPOSURE")] <- "EXCESSIVE HEAT"
+rawEventFreq$matchedEventType[which(rawEventFreq$EVTYPEADJ=="HYPOTHERMIA/EXPOSURE")] <- "EXTREME COLD/WIND CHILL"
+rawEventFreq$matchedEventType[which(rawEventFreq$EVTYPEADJ=="ICE")] <- "ICE STORM"
+rawEventFreq$matchedEventType[which(rawEventFreq$EVTYPEADJ=="ICE FOG")] <- "FREEZING FOG"
+rawEventFreq$matchedEventType[grep("^ICE JAM", rawEventFreq$EVTYPEADJ)] <- "FLOOD"
+rawEventFreq$matchedEventType[grep("^LANDSLIDE", rawEventFreq$EVTYPEADJ)] <- "DEBRIS FLOW"
+rawEventFreq$matchedEventType[which(rawEventFreq$EVTYPEADJ=="LANDSLUMP")] <- "DEBRIS FLOW"
+rawEventFreq$matchedEventType[which(rawEventFreq$EVTYPEADJ=="LANDSPOUT")] <- "TORNADO"
+rawEventFreq$matchedEventType[which(rawEventFreq$EVTYPEADJ=="LATE SEASON HAIL")] <- "HAIL"
+rawEventFreq$matchedEventType[grep("^LATE SEASON SNOW", rawEventFreq$EVTYPEADJ)] <- "HEAVY SNOW"
+rawEventFreq$matchedEventType[which(rawEventFreq$EVTYPEADJ=="LATE-SEASON SNOWFALL")] <- "HEAVY SNOW"
+rawEventFreq$matchedEventType[which(rawEventFreq$EVTYPEADJ=="LIGHT FREEZING RAIN")] <- "SLEET"
+rawEventFreq$matchedEventType[grep("^LIGHT SNOW", rawEventFreq$EVTYPEADJ)] <- "HEAVY SNOW"
+rawEventFreq$matchedEventType[which(rawEventFreq$EVTYPEADJ=="MARINE ACCIDENT")] <- "MARINE STRONG WIND"
+rawEventFreq$matchedEventType[which(rawEventFreq$EVTYPEADJ=="MARINE THUNDERSTORM WIND")] <- "MARINE THUNDERSTORM WIND"
+rawEventFreq$matchedEventType[which(rawEventFreq$EVTYPEADJ=="MARINE TSTM WIND")] <- "MARINE THUNDERSTORM WIND"
+rawEventFreq$matchedEventType[which(rawEventFreq$EVTYPEADJ=="METRO STORM, MAY 26")] <- "THUNDERSTORM WIND"
+rawEventFreq$matchedEventType[which(rawEventFreq$EVTYPEADJ=="MILD AND DRY PATTERN")] <- "DROUGHT"
+rawEventFreq$matchedEventType[which(rawEventFreq$EVTYPEADJ=="MINOR FLOODING")] <- "FLOOD"
+rawEventFreq$matchedEventType[grep("^MIXED PRECIP", rawEventFreq$EVTYPEADJ)] <- "SLEET"
+rawEventFreq$matchedEventType[which(rawEventFreq$EVTYPEADJ=="MUD SLIDE")] <- "DEBRIS FLOW"
+rawEventFreq$matchedEventType[grep("MUDSLIDE", rawEventFreq$EVTYPEADJ)] <- "DEBRIS FLOW"
+rawEventFreq$matchedEventType[which(rawEventFreq$EVTYPEADJ=="NON SEVERE HAIL")] <- "HAIL"
+rawEventFreq$matchedEventType[which(rawEventFreq$EVTYPEADJ=="NON TSTM WIND")] <- "HIGH WIND"
+rawEventFreq$matchedEventType[which(rawEventFreq$EVTYPEADJ=="NON-SEVERE WIND DAMAGE")] <- "HIGH WIND"
+rawEventFreq$matchedEventType[which(rawEventFreq$EVTYPEADJ=="NON-TSTM WIND")] <- "HIGH WIND"
+rawEventFreq$matchedEventType[which(rawEventFreq$EVTYPEADJ=="PATCHY ICE")] <- "ICE STORM"
+rawEventFreq$matchedEventType[which(rawEventFreq$EVTYPEADJ=="PROLONG COLD")] <- "EXTREME COLD/WIND CHILL"
+rawEventFreq$matchedEventType[which(rawEventFreq$EVTYPEADJ=="PROLONG WARMTH")] <- "EXCESSIVE HEAT"
+rawEventFreq$matchedEventType[grep("^RAIN", rawEventFreq$EVTYPEADJ)] <- "HEAVY RAIN"
+rawEventFreq$matchedEventType[grep("RECORD*COLD", rawEventFreq$EVTYPEADJ)] <- "EXTREME COLD/WIND CHILL"
+rawEventFreq$matchedEventType[which(rawEventFreq$EVTYPEADJ=="RECORD COOL")] <- "EXTREME COLD/WIND CHILL"
+rawEventFreq$matchedEventType[grep("^RECORD DRY", rawEventFreq$EVTYPEADJ)] <- "DROUGHT"
+rawEventFreq$matchedEventType[which(rawEventFreq$EVTYPEADJ=="RECORD HEAT")] <- "EXCESSIVE HEAT"
+rawEventFreq$matchedEventType[which(rawEventFreq$EVTYPEADJ=="RECORD HIGH")] <- "EXCESSIVE HEAT"
+rawEventFreq$matchedEventType[which(rawEventFreq$EVTYPEADJ=="RECORD LOW RAINFALL")] <- "DROUGHT"
+rawEventFreq$matchedEventType[grep("^RECORD WARM", rawEventFreq$EVTYPEADJ)] <- "EXCESSIVE HEAT"
+rawEventFreq$matchedEventType[which(rawEventFreq$EVTYPEADJ=="RECORD WINTER SNOW")] <- "HEAVY SNOW"
+rawEventFreq$matchedEventType[grep("^RED FLAG", rawEventFreq$EVTYPEADJ)] <- "WILDFIRE"
+rawEventFreq$matchedEventType[which(rawEventFreq$EVTYPEADJ=="REMNANTS OF FLOYD")] <- "HURRICANE/TYPHOON"
+rawEventFreq$matchedEventType[grep("^RIVER FLOOD", rawEventFreq$EVTYPEADJ)] <-"FLOOD"
+rawEventFreq$matchedEventType[which(rawEventFreq$EVTYPEADJ=="ROCK SLIDE")] <- "DEBRIS FLOW"
+rawEventFreq$matchedEventType[which(rawEventFreq$EVTYPEADJ=="ROGUE WAVE")] <- "HIGH SURF"
+rawEventFreq$matchedEventType[which(rawEventFreq$EVTYPEADJ=="ROUGH SEAS")] <- "MARINE STRONG WIND"
+rawEventFreq$matchedEventType[which(rawEventFreq$EVTYPEADJ=="SAHARAN DUST")] <- "DUST STORM"
+rawEventFreq$matchedEventType[grep("^SEVERE THUNDERSTORM", rawEventFreq$EVTYPEADJ)] <- "THUNDERSTORM WIND"
+rawEventFreq$matchedEventType[grep("^SLEET", rawEventFreq$EVTYPEADJ)] <- "SLEET"
+rawEventFreq$matchedEventType[which(rawEventFreq$EVTYPEADJ=="SMALL HAIL")] <- "HAIL"
+rawEventFreq$matchedEventType[which(rawEventFreq$EVTYPEADJ=="SML STREAM FLD")] <- "FLOOD"
+rawEventFreq$matchedEventType[which(rawEventFreq$EVTYPEADJ=="SMOKE")] <- "WILDFIRE"
+rawEventFreq$matchedEventType[grep("^SNOW", rawEventFreq$EVTYPEADJ)] <- "HEAVY SNOW"
+rawEventFreq$matchedEventType[which(rawEventFreq$EVTYPEADJ=="SNOWMELT FLOODING")] <- "FLOOD"
+rawEventFreq$matchedEventType[which(rawEventFreq$EVTYPEADJ=="STREET FLOODING")] <- "FLOOD"
+rawEventFreq$matchedEventType[which(rawEventFreq$EVTYPEADJ=="TEMPERATURE RECORD")] <- "EXCESSIVE HEAT"
+rawEventFreq$matchedEventType[which(rawEventFreq$EVTYPEADJ=="THUNDERSNOW SHOWER")] <- "HEAVY SNOW"
+rawEventFreq$matchedEventType[which(rawEventFreq$EVTYPEADJ=="TORRENTIAL RAINFALL")] <- "HEAVY RAIN"
+rawEventFreq$matchedEventType[which(rawEventFreq$EVTYPEADJ=="TYPHOON")] <- "HURRICANE/TYPHOON"
+rawEventFreq$matchedEventType[grep("^UNSEASON*COLD", rawEventFreq$EVTYPEADJ)] <- "EXTREME COLD/WIND CHILL"
+rawEventFreq$matchedEventType[grep("^UNSEASON*COOL", rawEventFreq$EVTYPEADJ)] <- "EXTREME COLD/WIND CHILL"
+rawEventFreq$matchedEventType[which(rawEventFreq$EVTYPEADJ=="UNSEASONABLY COOL & WET")] <- "EXTREME COLD/WIND CHILL"
+rawEventFreq$matchedEventType[which(rawEventFreq$EVTYPEADJ=="UNSEASONABLY DRY")] <- "DROUGHT"
+rawEventFreq$matchedEventType[which(rawEventFreq$EVTYPEADJ=="UNSEASONABLY HOT")] <- "HEAT"
+rawEventFreq$matchedEventType[grep("^UNSEASONABLY WARM", rawEventFreq$EVTYPEADJ)] <- "HEAT"
+rawEventFreq$matchedEventType[which(rawEventFreq$EVTYPEADJ=="UNSEASONABLY WET")] <- "HEAVY RAIN"
+rawEventFreq$matchedEventType[which(rawEventFreq$EVTYPEADJ=="UNSEASONAL LOW TEMP")] <- "EXTREME COLD/WIND CHILL"
+rawEventFreq$matchedEventType[which(rawEventFreq$EVTYPEADJ=="UNSEASONAL RAIN")] <- "HEAVY RAIN"
+rawEventFreq$matchedEventType[which(rawEventFreq$EVTYPEADJ=="UNUSUAL WARMTH")] <- "HEAT"
+rawEventFreq$matchedEventType[which(rawEventFreq$EVTYPEADJ=="UNUSUAL/RECORD WARMTH")] <- "HEAT"
+rawEventFreq$matchedEventType[which(rawEventFreq$EVTYPEADJ=="UNUSALLY COLD")] <- "EXTREME COLD/WIND CHILL"
+rawEventFreq$matchedEventType[which(rawEventFreq$EVTYPEADJ=="UNUSALLY WARM")] <- "HEAT"
+rawEventFreq$matchedEventType[grep("URBAN*FLOOD", rawEventFreq$EVTYPEADJ)] <- "FLOOD"
+rawEventFreq$matchedEventType[grep("URBAN*FLD", rawEventFreq$EVTYPEADJ)] <- "FLOOD"
+rawEventFreq$matchedEventType[which(rawEventFreq$EVTYPEADJ=="VERY DRY")] <- "DROUGHT"
+rawEventFreq$matchedEventType[which(rawEventFreq$EVTYPEADJ=="VERY WARM")] <- "HEAT"
+rawEventFreq$matchedEventType[which(rawEventFreq$EVTYPEADJ=="VOG")] <- "DENSE FOG"
+rawEventFreq$matchedEventType[which(rawEventFreq$EVTYPEADJ=="WARM WEATHER")] <- "HEAT"
+rawEventFreq$matchedEventType[which(rawEventFreq$EVTYPEADJ=="WET MICOBURST")] <- "TORNADO"
+rawEventFreq$matchedEventType[which(rawEventFreq$EVTYPEADJ=="WET MONTH")] <- "HEAVY RAIN"
+rawEventFreq$matchedEventType[which(rawEventFreq$EVTYPEADJ=="WET YEAR")] <- "HEAVY RAIN"
+rawEventFreq$matchedEventType[which(rawEventFreq$EVTYPEADJ=="WHIRLWIND")] <- "TORNADO"
+rawEventFreq$matchedEventType[grep("^WIND", rawEventFreq$EVTYPEADJ)] <- "HIGH WIND"
+rawEventFreq$matchedEventType[which(rawEventFreq$EVTYPEADJ=="WND")] <- "HIGH WIND"
+
+# Now, merge the correspondence of official event type and event types found in the
+# original data back into the original data
+stormdataSub <- merge(stormdataSub, rawEventFreq)
+
+# Convert resultant "official" matched type to a factor
+stormdataSub$matchedEventType <- as.factor(stormdataSub$matchedEventType)
+```
+
+Next we look at cleaning up and computing economic effects, as measured
+by dollar amounts of damage ot crops and property. This is measured by the
+damage-EXP variables; we find a number of different levels, varying case 
+("K" and "k"). Since the only meaningful levels are billions ("B"), 
+millions ("M"), thousands ("K"), and no multiplier (""), we take steps to 
+remove records that contain EXP values other than those, and compute numeric 
+damage estimates based on those EXP values.
+
+Begin with property damage:
+
+```{r echo=TRUE}
+levels(stormdataSub$PROPDMGEXP)
+
+# Convert to character in order to find empty strings more easily
+stormdataSub$PROPDMGEXP <- as.character(stormdataSub$PROPDMGEXP)
+
+# Convert the EXP variable to upper case to standardize
+stormdataSub$PROPDMGEXP <- toupper(stormdataSub$PROPDMGEXP)
+
+# Generate a "fake" character value for empty string ("D" for "dollars")
+stormdataSub$PROPDMGEXP[nchar(stormdataSub$PROPDMGEXP)==0] <- "D"
+
+# Reduce the dataset to only the values of interest / values that make
+# sense
+stormdataSub <- stormdataSub[stormdataSub$PROPDMGEXP %in% c("B", "M", "K", "D"),]
+
+# Replace the letter values with corresponding numeric values
+stormdataSub$PROPDMGEXP[stormdataSub$PROPDMGEXP=="B"] <- "1000000000"
+stormdataSub$PROPDMGEXP[stormdataSub$PROPDMGEXP=="M"] <- "1000000"
+stormdataSub$PROPDMGEXP[stormdataSub$PROPDMGEXP=="K"] <- "1000"
+stormdataSub$PROPDMGEXP[stormdataSub$PROPDMGEXP=="D"] <- "1"
+
+# Establish as a numeric value
+stormdataSub$PROPDMGEXP <- as.numeric(stormdataSub$PROPDMGEXP)
+
+# Compute the product of the numeric PROPDMG with the now numeric
+# multiplier PROPDMGEXP
+stormdataSub$PROPDMGVAL <- stormdataSub$PROPDMG * stormdataSub$PROPDMGEXP
+```
+
+Exactly the same for crop damage:
+
+```{r echo=TRUE}
+levels(stormdataSub$CROPDMGEXP)
+
+# Convert to character in order to find empty strings more easily
+stormdataSub$CROPDMGEXP <- as.character(stormdataSub$CROPDMGEXP)
+
+# Convert the EXP variable to upper case to standardize
+stormdataSub$CROPDMGEXP <- toupper(stormdataSub$CROPDMGEXP)
+
+# Generate a "fake" character value for empty string ("D" for "dollars")
+stormdataSub$CROPDMGEXP[nchar(stormdataSub$CROPDMGEXP)==0] <- "D"
+
+# Reduce the dataset to only the values of interest / values that make
+# sense
+stormdataSub <- stormdataSub[stormdataSub$CROPDMGEXP %in% c("B", "M", "K", "D"),]
+
+# Replace the letter values with corresponding numeric values
+stormdataSub$CROPDMGEXP[stormdataSub$CROPDMGEXP=="B"] <- "1000000000"
+stormdataSub$CROPDMGEXP[stormdataSub$CROPDMGEXP=="M"] <- "1000000"
+stormdataSub$CROPDMGEXP[stormdataSub$CROPDMGEXP=="K"] <- "1000"
+stormdataSub$CROPDMGEXP[stormdataSub$CROPDMGEXP=="D"] <- "1"
+
+# Establish as a numeric value
+stormdataSub$CROPDMGEXP <- as.numeric(stormdataSub$CROPDMGEXP)
+
+# Compute the product of the numeric CROPDMG with the now numeric
+# multiplier CROPDMGEXP
+stormdataSub$CROPDMGVAL <- stormdataSub$CROPDMG * stormdataSub$CROPDMGEXP
+```
+
+Finally, both for crop and property damage, we want to adjust the dollar
+value figures for inflation, so we obtain dollar inflation data from 1996-2011,
+based on 2011 dollars.
+
+The data can be obtained manually at the following link: 
+http://liberalarts.oregonstate.edu/files/polisci/faculty-research/sahr/inflation-conversion/pdf/cv2011.pdf
+
+We obtain this data, which expresses the value of one 2011 dollar in dollars
+for other years. We must invert those figures to determine the value of one
+dollar from other years in 2011 dollars; this forms the "inflation multiplier"
+for each event in our data set, that will be multiplied by the prior-computed
+damage estimates.
+
+```{r getinflationdata, echo=TRUE}
+year <- c(1996:2011)
+
+# Data are provided as factors (as in, how many dollars
+# in year X are equal to 1 dollar in 2011), so we invert
+# to get the inflation multiplier (e.g. 1 dollar in year
+# X is equal to how many dollars in 2011)
+inflationFactors <- c(0.698,
+                      0.714,
+                      0.725,
+                      0.741,
+                      0.766,
+                      0.787,
+                      0.800,
+                      0.818,
+                      0.840,
+                      0.868,
+                      0.896,
+                      0.922,
+                      0.957,
+                      0.954,
+                      0.969,
+                      1.000)
+
+# Round to 3 decimal places to match raw data
+inflationMultiplier <- round(1 / inflationFactors, 3)
+inflationData <- cbind(year, inflationMultiplier)
+
+# Merge the inflation data in by year (already in our dataset)
+stormdataSub <- merge(stormdataSub, inflationData)
+
+# For each event, compute inflation-adjusted dollar figures based on
+# the merged inflation multipliers
+stormdataSub$PROPDMGVALINFL <- stormdataSub$PROPDMGVAL * stormdataSub$inflationMultiplier
+stormdataSub$CROPDMGVALINFL <- stormdataSub$CROPDMGVAL * stormdataSub$inflationMultiplier
+```
+
+## Analysis
+
+The questions of interest were: which types of events had the greatest effect
+on population health, and which types of events had the greatest economic
+consequences.
+
+The effect on population health can be measured by the combined number
+of fatalities and injuries per event type. As such, the events are categorized
+by event type, with the sum of fatalities and injuries computed for each
+event type.
+
+```{r echo=TRUE}
+library(plyr)
+
+healthEffectByEventType <- ddply(stormdataSub, 
+                                 .(matchedEventType),
+                                 summarize,
+                                 healthEffect=sum(FATALITIES+INJURIES))
+```
+
+The economic effects can be measured by the combined amounts of property and
+crop damage per event type. Once again, we categorize the events by event
+type, and sum the inflation-adjusted crop and property damage values as computed 
+above.
+
+```{r echo=TRUE}
+econEffectByEventType=ddply(stormdataSub, 
+                            .(matchedEventType), 
+                            summarize, 
+                            econEffect=sum(PROPDMGVALINFL+CROPDMGVALINFL))
+```
+
+## Results
+
+The above categorizations will allow us to answer the questions of interest.
+
+### Health Effects
+
+First, let's look at a plot of the health effect "values" (combined fatalities
+and injuries per event type).
+
+```{r echo=TRUE}
+# In order to make the plot look better, skip x-axis (since it is obvious
+# from the plot title, and from the content of the axis)
+
+# To ensure the x-axis labels don't get cut off, establish an outer margin
+par(oma=c(4,1,0,1))
+
+plot(healthEffectByEventType, 
+     ylab="Sum of Fatalities and Injuries", 
+     xlab="",
+     main="Health Effects (Fatalities & Injuries)\n of Weather Events by Event Type, 1996-2011",
+     xaxt="n")
+
+# Custom x-axis with perpendicular labels, and shrunken font size to ensure they fit
+axis(side="1", 
+     las=2, 
+     at=healthEffectByEventType$matchedEventType, 
+     labels=levels(healthEffectByEventType$matchedEventType),
+     cex.axis=0.5)
+```
+
+We can read off this plot that the greatest health effect was observed for
+tornados.
+
+### Economic Effects
+
+We can similarly look at the economic effects of each type of weather event.
+
+```{r echo=TRUE}
+par(oma=c(4,1,0,1))
+
+plot(econEffectByEventType, 
+     ylab="Combined Crop and Property Damage (2011 $)", 
+     xlab="",
+     main="Economic Effects (Crop & Property Damage)\n of Weather Events by Event Type, 1996-2011",
+     xaxt="n")
+
+# Custom x-axis with perpendicular labels, and shrunken font size to ensure they fit
+# Also adjust 
+axis(side="1", 
+     las=2, 
+     at=econEffectByEventType$matchedEventType, 
+     labels=levels(econEffectByEventType$matchedEventType),
+     cex.axis=0.5)
+```
+
+We can read off this plot that the greatest economic effect was observed for
+flooding.
+

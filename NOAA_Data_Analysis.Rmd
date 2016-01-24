@@ -97,10 +97,11 @@ stormdataSub$year <- format(stormdataSub$BGN_DATE, "%Y")
 ```
 
 Now we set about cleaning up columns of interest. First, the event types.
-The database documentation provides 48 "official" categories; in the
+The database documentation (https://d396qusza40orc.cloudfront.net/repdata%2Fpeer2_doc%2Fpd01016005curr.pdf) 
+provides 48 "official" categories; in the
 EVTYPE column there are many typos, errors, and the like; the cleaning
 effort for this column will be the process of converting all of the values
-in the EVTYPE column to an official category. We do so by trimming whitespace,
+in the EVTYPE column to one of the official categories. We do so by trimming whitespace,
 converting values to upper case, eliminating values (events) for which
 the mapping does not make sense, using an approximate string match as a
 first cut for establishing the intended mapping, and finally, manually
